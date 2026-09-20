@@ -19,22 +19,22 @@
           <h3 class="text-sm font-bold text-slate-400">参数调节</h3>
           <div>
             <label class="text-xs text-slate-500">波长 λ = {{ store.params.wavelength }} nm</label>
-            <input type="range" min="380" max="780" step="5" v-model.number="store.params.wavelength" @input="store.compute" class="w-full accent-cyan-500" />
+            <input type="range" min="380" max="780" step="5" v-model.number="store.params.wavelength" @input="onParamInput" class="w-full accent-cyan-500" />
             <div class="flex justify-between text-xs mt-0.5">
               <span style="color:#8b5cf6">380</span><span style="color:#06b6d4">500</span><span style="color:#22c55e">550</span><span style="color:#eab308">600</span><span style="color:#dc2626">780</span>
             </div>
           </div>
           <div v-if="store.currentExperiment !== 'newton'">
             <label class="text-xs text-slate-500">缝宽/间距 d = {{ store.params.slitWidth }} μm</label>
-            <input type="range" min="10" max="200" step="5" v-model.number="store.params.slitWidth" @input="store.compute" class="w-full accent-purple-500" />
+            <input type="range" min="10" max="200" step="5" v-model.number="store.params.slitWidth" @input="onParamInput" class="w-full accent-purple-500" />
           </div>
           <div v-if="store.currentExperiment === 'double'">
             <label class="text-xs text-slate-500">缝间距 D = {{ store.params.slitSeparation }} μm</label>
-            <input type="range" min="50" max="500" step="10" v-model.number="store.params.slitSeparation" @input="store.compute" class="w-full accent-green-500" />
+            <input type="range" min="50" max="500" step="10" v-model.number="store.params.slitSeparation" @input="onParamInput" class="w-full accent-green-500" />
           </div>
           <div>
             <label class="text-xs text-slate-500">屏幕距离 L = {{ store.params.screenDistance }} mm</label>
-            <input type="range" min="100" max="2000" step="50" v-model.number="store.params.screenDistance" @input="store.compute" class="w-full accent-orange-500" />
+            <input type="range" min="100" max="2000" step="50" v-model.number="store.params.screenDistance" @input="onParamInput" class="w-full accent-orange-500" />
           </div>
         </div>
         <div class="bg-slate-800 rounded-lg p-4 border border-slate-700 text-sm">
@@ -69,6 +69,39 @@
           <h3 class="text-sm font-bold text-slate-400 mb-3">光强分布曲线</h3>
           <canvas ref="intensityRef" class="w-full rounded" style="height: 200px; background: #0f172a;"></canvas>
         </div>
+        <div v-if="store.currentExperiment === 'double'" class="bg-slate-800 rounded-lg p-4 border border-slate-700">
+          <div class="flex items-center justify-between mb-3">
+            <h3 class="text-sm font-bold text-slate-400">双缝对照实验</h3>
+            <div class="space-x-2">
+              <button @click="store.setBaseline()"
+                class="px-3 py-1 text-xs rounded border border-cyan-600 text-cyan-400 hover:bg-cyan-900/40 transition-all">设为基准</button>
+              <button v-if="store.baseline" @click="store.clearBaseline()"
+                class="px-3 py-1 text-xs rounded border border-slate-600 text-slate-400 hover:bg-slate-700 transition-all">清除基准</button>
+            </div>
+          </div>
+          <p v-if="statusText" class="text-xs text-slate-500 mb-3">{{ statusText }}</p>
+          <div v-if="store.baseline" class="space-y-3">
+            <div class="grid grid-cols-2 gap-3">
+              <div>
+                <div class="text-xs text-slate-500 mb-1"
+                  :title="`a=${store.baseline.slitWidth}μm L=${store.baseline.screenDistance}mm`">
+                  基准 · λ={{ store.baseline.wavelength }}nm · D={{ store.baseline.slitSeparation }}μm · Δy={{ store.baselineFringe?.toFixed(2) }}mm
+                </div>
+                <canvas ref="basePatternRef" class="w-full rounded" style="height: 120px; background: black;"></canvas>
+              </div>
+              <div>
+                <div class="text-xs text-cyan-500 mb-1">
+                  当前 · λ={{ store.params.wavelength }}nm · D={{ store.params.slitSeparation }}μm · Δy={{ store.result.fringe?.toFixed(2) }}mm
+                </div>
+                <canvas ref="curPatternRef" class="w-full rounded" style="height: 120px; background: black;"></canvas>
+              </div>
+            </div>
+            <div class="grid grid-cols-2 gap-3">
+              <canvas ref="baseIntensityRef" class="w-full rounded" style="height: 140px; background: #0f172a;"></canvas>
+              <canvas ref="curIntensityRef" class="w-full rounded" style="height: 140px; background: #0f172a;"></canvas>
+            </div>
+          </div>
+        </div>
         <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
           <h3 class="text-sm font-bold text-slate-400 mb-3">2D 热力图</h3>
           <canvas ref="heatmapRef" class="w-full rounded" style="height: 200px; background: black;"></canvas>
@@ -79,13 +112,28 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, watch, nextTick } from 'vue'
 import { useOpticsStore } from './store/optics'
 
 const store = useOpticsStore()
 const patternRef = ref<HTMLCanvasElement | null>(null)
 const intensityRef = ref<HTMLCanvasElement | null>(null)
 const heatmapRef = ref<HTMLCanvasElement | null>(null)
+const basePatternRef = ref<HTMLCanvasElement | null>(null)
+const curPatternRef = ref<HTMLCanvasElement | null>(null)
+const baseIntensityRef = ref<HTMLCanvasElement | null>(null)
+const curIntensityRef = ref<HTMLCanvasElement | null>(null)
+
+const statusText = computed(() => {
+  switch (store.compareStatus) {
+    case 'no-baseline': return '尚未设置基准参数 — 点击「设为基准」固定当前参数，再调节波长或缝间距进行对照'
+    case 'identical': return '当前参数与基准一致，两组图样相同'
+    case 'adjusting': return '参数调整中…'
+    default: return ''
+  }
+})
+
+function onParamInput() { store.compute(); store.noteAdjusting() }
 
 const experiments = [
   { id: 'double', name: '双缝干涉 (Young实验)' },
@@ -179,8 +227,61 @@ function drawHeatmap() {
   ctx.putImageData(imgData, 0, 0)
 }
 
-function renderAll() { drawPattern(); drawIntensity(); drawHeatmap() }
+function paintPattern(canvas: HTMLCanvasElement | null, data: number[], nm: number, height: number) {
+  if (!canvas || !data.length) return
+  canvas.width = canvas.clientWidth
+  canvas.height = height
+  const ctx = canvas.getContext('2d')!
+  const W = canvas.width, H = canvas.height
+  ctx.fillStyle = 'black'
+  ctx.fillRect(0, 0, W, H)
+  const [r, g, b] = wavelengthToRGB(nm)
+  for (let x = 0; x < W; x++) {
+    const idx = Math.round(x / W * (data.length - 1))
+    const alpha = Math.min(1, data[idx] || 0)
+    ctx.fillStyle = `rgba(${r},${g},${b},${alpha})`
+    ctx.fillRect(x, 0, 1, H)
+  }
+}
+
+function paintIntensity(canvas: HTMLCanvasElement | null, data: number[], nm: number, height: number) {
+  if (!canvas || !data.length) return
+  canvas.width = canvas.clientWidth
+  canvas.height = height
+  const ctx = canvas.getContext('2d')!
+  const W = canvas.width, H = canvas.height
+  ctx.fillStyle = '#0f172a'
+  ctx.fillRect(0, 0, W, H)
+  const [r, g, b] = wavelengthToRGB(nm)
+  ctx.beginPath()
+  ctx.strokeStyle = `rgb(${r},${g},${b})`
+  ctx.lineWidth = 2
+  data.forEach((v, i) => {
+    const x = i / (data.length - 1) * W
+    const y = H - v * (H - 10) - 5
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)
+  })
+  ctx.stroke()
+  ctx.fillStyle = `rgba(${r},${g},${b},0.15)`
+  ctx.lineTo(W, H); ctx.lineTo(0, H)
+  ctx.closePath(); ctx.fill()
+  ctx.strokeStyle = '#475569'; ctx.lineWidth = 1; ctx.setLineDash([3, 3])
+  ctx.beginPath(); ctx.moveTo(W / 2, 0); ctx.lineTo(W / 2, H); ctx.stroke()
+  ctx.setLineDash([])
+}
+
+function renderCompare() {
+  if (!store.baseline) return
+  paintPattern(basePatternRef.value, store.baselineData, store.baseline.wavelength, 120)
+  paintPattern(curPatternRef.value, store.intensityData, store.params.wavelength, 120)
+  paintIntensity(baseIntensityRef.value, store.baselineData, store.baseline.wavelength, 140)
+  paintIntensity(curIntensityRef.value, store.intensityData, store.params.wavelength, 140)
+}
+
+function renderAll() { drawPattern(); drawIntensity(); drawHeatmap(); renderCompare() }
 
 onMounted(() => { store.compute(); setTimeout(renderAll, 100) })
 watch(() => store.intensityData, () => renderAll(), { deep: true })
+// 基准变更或切回双缝实验时，等待对照画布挂载后再重绘
+watch(() => [store.baseline, store.currentExperiment], () => nextTick(renderAll))
 </script>
